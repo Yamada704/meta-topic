@@ -3,8 +3,8 @@ SECTION = "kernel"
 LICENSE = "GPLv2"
 LIC_FILES_CHKSUM = "file://COPYING;md5=d7810fab7487fb0aad327b76f1be7cd7"
 
-SRCREV = "d8a5b80568a9cb66810e75b182018e9edb68e8ff"
-LINUX_VERSION = "4.15"
+SRCREV = "af3e79d29555b97dd096e2f8e36a0f50213808a8"
+LINUX_VERSION = "4.16"
 
 inherit kernel
 require recipes-kernel/linux/linux-dtb.inc
@@ -20,6 +20,7 @@ EXTRA_PATCHES = "\
 	file://0001-regulator-Add-ltc3562-voltage-regulator-driver.patch \
 	file://0001-Add-topic-miami-devicetrees.patch \
 	file://0001-usb-phy-generic-Use-gpiod_set_value_cansleep.patch \
+	file://0001-clk-Add-driver-for-the-si544-clock-generator-chip.patch \
 	"
 SRC_URI = "git://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git \
 	file://defconfig \
