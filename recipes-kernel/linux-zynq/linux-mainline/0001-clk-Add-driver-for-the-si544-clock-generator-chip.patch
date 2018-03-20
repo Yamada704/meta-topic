@@ -1,4 +1,4 @@
-From 464ea585ea6c5a742022aaf4403671171e3876a4 Mon Sep 17 00:00:00 2001
+From 2d2f536b9f6090140f613e41bc6303b6f868ad8a Mon Sep 17 00:00:00 2001
 From: Mike Looijmans <mike.looijmans@topic.nl>
 Date: Thu, 22 Feb 2018 12:59:00 +0100
 Subject: [PATCH] clk: Add driver for the si544 clock generator chip
@@ -11,16 +11,16 @@ to 1500MHz.
 Signed-off-by: Mike Looijmans <mike.looijmans@topic.nl>
 ---
  .../devicetree/bindings/clock/silabs,si544.txt     |  25 ++
- drivers/clk/Kconfig                                |  10 +
+ drivers/clk/Kconfig                                |   9 +
  drivers/clk/Makefile                               |   1 +
- drivers/clk/clk-si544.c                            | 414 +++++++++++++++++++++
- 4 files changed, 450 insertions(+)
+ drivers/clk/clk-si544.c                            | 411 +++++++++++++++++++++
+ 4 files changed, 446 insertions(+)
  create mode 100644 Documentation/devicetree/bindings/clock/silabs,si544.txt
  create mode 100644 drivers/clk/clk-si544.c
 
 diff --git a/Documentation/devicetree/bindings/clock/silabs,si544.txt b/Documentation/devicetree/bindings/clock/silabs,si544.txt
 new file mode 100644
-index 0000000..eec1787
+index 0000000..b86535b
 --- /dev/null
 +++ b/Documentation/devicetree/bindings/clock/silabs,si544.txt
 @@ -0,0 +1,25 @@
@@ -44,23 +44,22 @@ index 0000000..eec1787
 + - clock-output-names: From common clock bindings. Recommended to be "si544".
 +
 +Example:
-+	si544: clock-generator@55 {
++	si544: clock-controller@55 {
 +		reg = <0x55>;
 +		#clock-cells = <0>;
 +		compatible = "silabs,si544b";
 +	};
 diff --git a/drivers/clk/Kconfig b/drivers/clk/Kconfig
-index 98ce9fc..5c7dc8e 100644
+index 98ce9fc..580fc04 100644
 --- a/drivers/clk/Kconfig
 +++ b/drivers/clk/Kconfig
-@@ -91,6 +91,16 @@ config COMMON_CLK_SI514
+@@ -91,6 +91,15 @@ config COMMON_CLK_SI514
  	  This driver supports the Silicon Labs 514 programmable clock
  	  generator.
  
 +config COMMON_CLK_SI544
 +	tristate "Clock driver for SiLabs 544 devices"
 +	depends on I2C
-+	depends on OF
 +	select REGMAP_I2C
 +	help
 +	---help---
@@ -84,26 +83,15 @@ index 71ec41e..bde614a 100644
  obj-$(CONFIG_ARCH_STM32)		+= clk-stm32h7.o
 diff --git a/drivers/clk/clk-si544.c b/drivers/clk/clk-si544.c
 new file mode 100644
-index 0000000..3ee7d73
+index 0000000..d437722
 --- /dev/null
 +++ b/drivers/clk/clk-si544.c
-@@ -0,0 +1,414 @@
+@@ -0,0 +1,411 @@
++// SPDX-License-Identifier: GPL-2.0
 +/*
 + * Driver for Silicon Labs Si544 Programmable Oscillator
-+ *
 + * Copyright (C) 2018 Topic Embedded Products
-+ *
 + * Author: Mike Looijmans <mike.looijmans@topic.nl>
-+ *
-+ * This program is free software; you can redistribute it and/or modify
-+ * it under the terms of the GNU General Public License as published by
-+ * the Free Software Foundation; either version 2 of the License, or
-+ * (at your option) any later version.
-+ *
-+ * This program is distributed in the hope that it will be useful,
-+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
-+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-+ * GNU General Public License for more details.
 + */
 +
 +#include <linux/clk-provider.h>
@@ -143,10 +131,13 @@ index 0000000..3ee7d73
 +#define FXO		  55050000U
 +
 +/* VCO range is 10.8 .. 12.1 GHz, max depends on speed grade */
-+#define FVCO_MIN       10080000000ULL
++#define FVCO_MIN       10800000000ULL
 +
 +#define HS_DIV_MAX	2046
 +#define HS_DIV_MAX_ODD	33
++
++/* Lowest frequency synthesizeable using only the HS divider */
++#define MIN_HSDIV_FREQ	(FVCO_MIN / HS_DIV_MAX)
 +
 +enum si544_speed_grade {
 +	si544a,
@@ -162,12 +153,19 @@ index 0000000..3ee7d73
 +};
 +#define to_clk_si544(_hw)	container_of(_hw, struct clk_si544, hw)
 +
-+/* Multiplier/divider settings */
++/**
++ * struct clk_si544_muldiv - Multiplier/divider settings
++ * @fb_div_frac:	integer part of feedback divider (32 bits)
++ * @fb_div_int:		fractional part of feedback divider (11 bits)
++ * @hs_div:		1st divider, 5..2046, must be even when >33
++ * @ls_div_bits:	2nd divider, as 2^x, range 0..5
++ *                      If ls_div_bits is non-zero, hs_div must be even
++ */
 +struct clk_si544_muldiv {
-+	u32 fb_div_frac;  /* Integer part of feedback divider (32 bits) */
-+	u16 fb_div_int;  /* Fractional part of feedback divider (11 bits) */
-+	u16 hs_div; /* 1st divider, 5..2046, must be even when >33 */
-+	u8 ls_div_bits; /* 2nd divider, as 2^x, range 0..5 */
++	u32 fb_div_frac;
++	u16 fb_div_int;
++	u16 hs_div;
++	u8 ls_div_bits;
 +};
 +
 +/* Enables or disables the output driver */
@@ -182,18 +180,22 @@ index 0000000..3ee7d73
 +	struct clk_si544_muldiv *settings)
 +{
 +	int err;
-+	u8 reg[9];
++	u8 reg[6];
 +
-+	err = regmap_bulk_read(data->regmap, SI544_REG_HS_DIV,
-+			reg, ARRAY_SIZE(reg));
++	err = regmap_bulk_read(data->regmap, SI544_REG_HS_DIV, reg, 2);
 +	if (err)
 +		return err;
 +
-+	settings->fb_div_int = reg[7] | (reg[8] & 0x07) << 8;
-+	settings->fb_div_frac = reg[3] | reg[4] << 8 | reg[5] << 16 |
-+				reg[6] << 24;
 +	settings->ls_div_bits = (reg[1] >> 4) & 0x07;
 +	settings->hs_div = (reg[1] & 0x07) << 8 | reg[0];
++
++	err = regmap_bulk_read(data->regmap, SI544_REG_FBDIV0, reg, 6);
++	if (err)
++		return err;
++
++	settings->fb_div_int = reg[4] | (reg[5] & 0x07) << 8;
++	settings->fb_div_frac = reg[0] | reg[1] << 8 | reg[2] << 16 |
++				reg[3] << 24;
 +	return 0;
 +}
 +
@@ -202,7 +204,7 @@ index 0000000..3ee7d73
 +{
 +	int err;
 +	u8 reg[6];
-+	
++
 +	reg[0] = settings->hs_div;
 +	reg[1] = settings->hs_div >> 8 | settings->ls_div_bits << 4;
 +
@@ -242,14 +244,9 @@ index 0000000..3ee7d73
 +	case si544c:
 +		max_freq = 350000000;
 +		break;
-+	default:
-+		return false;
 +	}
-+	
-+	if (frequency > max_freq)
-+		return false;
-+	
-+	return true;
++
++	return frequency <= max_freq;
 +}
 +
 +/* Calculate divider settings for a given frequency */
@@ -265,13 +262,13 @@ index 0000000..3ee7d73
 +	ls_freq = frequency;
 +	settings->ls_div_bits = 0;
 +
-+	if (frequency >= (FVCO_MIN / HS_DIV_MAX))
++	if (frequency >= MIN_HSDIV_FREQ) {
 +		settings->ls_div_bits = 0;
-+	else {
++	} else {
 +		res = 1;
 +		tmp = 2 * HS_DIV_MAX;
 +		while (tmp <= (HS_DIV_MAX * 32)) {
-+			if ((frequency * tmp) >= FVCO_MIN)
++			if (((u64)frequency * tmp) >= FVCO_MIN)
 +				break;
 +			++res;
 +			tmp <<= 1;
@@ -284,14 +281,19 @@ index 0000000..3ee7d73
 +	vco = FVCO_MIN + ls_freq - 1;
 +	do_div(vco, ls_freq);
 +	settings->hs_div = vco;
-+	/* round up to even number if needed */
-+	if ((settings->hs_div > HS_DIV_MAX_ODD) && (settings->hs_div & 1))
++
++	/* round up to even number when required */
++	if ((settings->hs_div & 1) &&
++	    (settings->hs_div > HS_DIV_MAX_ODD || settings->ls_div_bits))
 +		++settings->hs_div;
++
 +	/* Calculate VCO frequency (in 10..12GHz range) */
 +	vco = (u64)ls_freq * settings->hs_div;
++
 +	/* Calculate the integer part of the feedback divider */
 +	tmp = do_div(vco, FXO);
 +	settings->fb_div_int = vco;
++
 +	/* And the fractional bits using the remainder */
 +	vco = (u64)tmp << 32;
 +	do_div(vco, FXO);
@@ -303,10 +305,18 @@ index 0000000..3ee7d73
 +/* Calculate resulting frequency given the register settings */
 +static unsigned long si544_calc_rate(struct clk_si544_muldiv *settings)
 +{
-+	u64 m = settings->fb_div_frac | ((u64)settings->fb_div_int << 32);
 +	u32 d = settings->hs_div * BIT(settings->ls_div_bits);
-+	u64 vco = (m * FXO) + (FXO / 2);
-+	
++	u64 vco;
++
++	/* Calculate VCO from the fractional part */
++	vco = (u64)settings->fb_div_frac * FXO;
++	vco += (FXO / 2);
++	vco >>= 32;
++
++	/* Add the integer part of the VCO frequency */
++	vco += (u64)settings->fb_div_int * FXO;
++
++	/* Apply divider to obtain the generated frequency */
 +	do_div(vco, d);
 +
 +	return vco;
@@ -320,10 +330,8 @@ index 0000000..3ee7d73
 +	int err;
 +
 +	err = si544_get_muldiv(data, &settings);
-+	if (err) {
-+		dev_err(&data->i2c_client->dev, "unable to retrieve settings\n");
++	if (err)
 +		return 0;
-+	}
 +
 +	return si544_calc_rate(&settings);
 +}
@@ -334,9 +342,6 @@ index 0000000..3ee7d73
 +	struct clk_si544 *data = to_clk_si544(hw);
 +	struct clk_si544_muldiv settings;
 +	int err;
-+
-+	if (!rate)
-+		return 0;
 +
 +	if (!is_valid_frequency(data, rate))
 +		return -EINVAL;
@@ -439,10 +444,8 @@ index 0000000..3ee7d73
 +		init.name = client->dev.of_node->name;
 +
 +	data->regmap = devm_regmap_init_i2c(client, &si544_regmap_config);
-+	if (IS_ERR(data->regmap)) {
-+		dev_err(&client->dev, "failed to allocate register map\n");
++	if (IS_ERR(data->regmap))
 +		return PTR_ERR(data->regmap);
-+	}
 +
 +	i2c_set_clientdata(client, data);
 +
@@ -456,19 +459,13 @@ index 0000000..3ee7d73
 +		dev_err(&client->dev, "clock registration failed\n");
 +		return err;
 +	}
-+	err = of_clk_add_hw_provider(client->dev.of_node, of_clk_hw_simple_get,
-+				     &data->hw);
++	err = devm_of_clk_add_hw_provider(&client->dev, of_clk_hw_simple_get,
++					  &data->hw);
 +	if (err) {
 +		dev_err(&client->dev, "unable to add clk provider\n");
 +		return err;
 +	}
 +
-+	return 0;
-+}
-+
-+static int si544_remove(struct i2c_client *client)
-+{
-+	of_clk_del_provider(client->dev.of_node);
 +	return 0;
 +}
 +
@@ -494,7 +491,6 @@ index 0000000..3ee7d73
 +		.of_match_table = clk_si544_of_match,
 +	},
 +	.probe		= si544_probe,
-+	.remove		= si544_remove,
 +	.id_table	= si544_id,
 +};
 +module_i2c_driver(si544_driver);
