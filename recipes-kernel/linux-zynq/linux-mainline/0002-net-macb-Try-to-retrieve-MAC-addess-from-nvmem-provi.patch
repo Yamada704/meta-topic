@@ -1,0 +1,41 @@
+From 7a97d1537c2993ca93d8df774a32dfa33d0e9c0e Mon Sep 17 00:00:00 2001
+From: Mike Looijmans <mike.looijmans@topic.nl>
+Date: Tue, 27 Mar 2018 10:47:02 +0200
+Subject: [PATCH 2/2] net: macb: Try to retrieve MAC addess from nvmem provider
+
+Call of_get_nvmem_mac_address() to fetch the MAC address from an nvmem
+cell, if one is provided in the device tree. This allows the address to
+be stored in an I2C EEPROM device for example.
+
+Signed-off-by: Mike Looijmans <mike.looijmans@topic.nl>
+---
+ drivers/net/ethernet/cadence/macb_main.c | 12 +++++++++---
+ 1 file changed, 9 insertions(+), 3 deletions(-)
+
+diff --git a/drivers/net/ethernet/cadence/macb_main.c b/drivers/net/ethernet/cadence/macb_main.c
+index e84afcf..eabe14f 100644
+--- a/drivers/net/ethernet/cadence/macb_main.c
++++ b/drivers/net/ethernet/cadence/macb_main.c
+@@ -3950,10 +3950,16 @@ static int macb_probe(struct platform_device *pdev)
+ 		dev->max_mtu = ETH_DATA_LEN;
+ 
+ 	mac = of_get_mac_address(np);
+-	if (mac)
++	if (mac) {
+ 		ether_addr_copy(bp->dev->dev_addr, mac);
+-	else
+-		macb_get_hwaddr(bp);
++	} else {
++		err = of_get_nvmem_mac_address(np, bp->dev->dev_addr);
++		if (err) {
++			if (err == -EPROBE_DEFER)
++				goto err_out_free_netdev;
++			macb_get_hwaddr(bp);
++		}
++	}
+ 
+ 	err = of_get_phy_mode(np);
+ 	if (err < 0) {
+-- 
+1.9.1
+

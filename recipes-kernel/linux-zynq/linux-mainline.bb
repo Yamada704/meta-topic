@@ -3,7 +3,7 @@ SECTION = "kernel"
 LICENSE = "GPLv2"
 LIC_FILES_CHKSUM = "file://COPYING;md5=d7810fab7487fb0aad327b76f1be7cd7"
 
-SRCREV = "af3e79d29555b97dd096e2f8e36a0f50213808a8"
+SRCREV = "f36b7534b83357cf52e747905de6d65b4f7c2512"
 LINUX_VERSION = "4.16"
 
 inherit kernel
@@ -17,6 +17,8 @@ DEPENDS += "lzop-native"
 FILESEXTRAPATHS_prepend := "${THISDIR}/linux-mainline:"
 
 EXTRA_PATCHES = "\
+	file://0001-of_net-Implement-of_get_nvmem_mac_address-helper.patch \
+	file://0002-net-macb-Try-to-retrieve-MAC-addess-from-nvmem-provi.patch \
 	file://0001-regulator-Add-ltc3562-voltage-regulator-driver.patch \
 	file://0001-Add-topic-miami-devicetrees.patch \
 	file://0001-usb-phy-generic-Use-gpiod_set_value_cansleep.patch \
